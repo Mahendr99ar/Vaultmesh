@@ -2,6 +2,10 @@
 
 ![CI](https://github.com/Mahendr99ar/vaultmesh/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+<<<<<<< HEAD
+=======
+![License](https://img.shields.io/badge/license-MIT-green)
+>>>>>>> b076aec3fd6c45840884f667bce8e78fae77f116
 
 **Live demo:** _coming soon_ · **Author:** [Mahendra Meena](https://github.com/Mahendr99ar)
 

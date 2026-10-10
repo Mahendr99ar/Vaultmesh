@@ -49,6 +49,50 @@ def spawn(cmd: list[str], log_name: str) -> subprocess.Popen:
     return subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
 
 
+def _is_our_process(pid: int) -> bool:
+    """True only if the pid is still a Python process (never kill an unrelated program
+    that happens to reuse an old pid)."""
+    if sys.platform == "win32":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True).stdout.lower()
+        return "python" in out
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return b"vaultmesh" in f.read()
+    except OSError:
+        return False
+
+
+def stop_previous_cluster() -> None:
+    """Stop a cluster left running from an earlier start, e.g. when its terminal window was
+    closed instead of pressing Ctrl+C (on Windows the node processes keep running and keep
+    the log files and ports busy)."""
+    path = os.path.join(DATA, "cluster.json")
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        return
+    pids = [n.get("pid") for n in old.get("nodes", [])] + [old.get("gateway", {}).get("pid")]
+    stopped = 0
+    for pid in filter(None, pids):
+        if pid == os.getpid() or not _is_our_process(pid):
+            continue
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+        else:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                continue
+        stopped += 1
+    if stopped:
+        print(f"Stopped {stopped} processes left over from the previous run.")
+        time.sleep(1.5)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--shards", type=int, default=2)
@@ -56,8 +100,17 @@ def main() -> None:
     ap.add_argument("--clean", action="store_true")
     args = ap.parse_args()
 
+    stop_previous_cluster()
     if args.clean and os.path.isdir(DATA):
-        shutil.rmtree(DATA)
+        for attempt in range(5):
+            try:
+                shutil.rmtree(DATA)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    sys.exit("Cannot delete the data folder because another program is using it.\n"
+                             "Close other VaultMesh windows, or run:  taskkill /F /IM python.exe")
+                time.sleep(1)
     os.makedirs(LOGS, exist_ok=True)
 
     layout = plan(args.shards, args.gateway_port)
