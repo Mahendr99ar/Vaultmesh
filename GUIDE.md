@@ -55,7 +55,7 @@ acknowledged is lost. A **gateway** in front hides all of this from the client.
    python -m pytest -v
    ```
 
-   You should see **21 passed**.
+   You should see **22 passed**.
 
 ---
 
@@ -217,11 +217,30 @@ follows `X-Raft-Leader` redirects, and if a node is dead tries the next replica 
 backoff (50 ms, 100 ms, 200 ms…). The client never sees a failover; it just sees one slower
 request. The `X-Attempts` response header shows how many tries it took.
 
-### Phase 10 — Dashboard (`vaultmesh/static/dashboard.html`)
+### Phase 10 — Live view (`vaultmesh/static/dashboard.html`, `/admin/crash`)
 
-A single HTML page served at `/` that polls `/cluster` every second and shows each node's role,
-term, commit index and log size. You can PUT/GET keys from it. Killing a leader while this page
-is open is the best live demo you can give an interviewer.
+A single HTML page served at `/` (no build step, no framework), styled like an ambient
+"clock" screen.
+
+* **The sky is the cluster.** A canvas draws each shard as a three-star constellation: the
+  leader glows amber, heartbeat pulses travel from it to the followers, and a crashed node
+  flickers red. It is real data from `/cluster`, polled twice a second.
+* **Big type in the centre** shows the focused shard's leader and term, for example
+  `s1n2 · term 3`. After you crash a leader it switches to `s1n1 · 740 ms`: the new leader and
+  the failover time measured from your click.
+* **Control bar:** previous shard, start/stop traffic, next shard, and the red lightning button
+  that crashes the focused shard's leader for 4 seconds. Keyboard: arrows, space, C.
+  The crash calls `POST /admin/crash`, which makes the leader go silent (`RaftNode.pause`) exactly
+  like a dead machine. The gateway refuses unless all three replicas are healthy, so a visitor can
+  never take a shard below its majority. When the old leader returns it sees the higher term and
+  steps down.
+* **Console below the fold:** replica table, live traffic chart (requests per second, p99, and a
+  red line where you crashed a leader), a plain-language timeline, and the hash ring with a
+  read/write form.
+* Night and morning themes, works on phones, respects "reduce motion".
+
+This is the best live demo you can give an interviewer: open it, press play, press the lightning
+button.
 
 ### Phase 11 — Testing strategy (`tests/`)
 
@@ -296,7 +315,7 @@ git remote add origin https://github.com/Mahendr99ar/vaultmesh.git   # create th
 git push -u origin main
 ```
 
-`.github/workflows/ci.yml` runs on every push: the 21 tests, a 3-round chaos test on a real
+`.github/workflows/ci.yml` runs on every push: the 22 tests, a 3-round chaos test on a real
 cluster, and a Docker build. A green CI badge on the README shows the project actually works.
 To add the badge, put this at the top of `README.md`:
 
@@ -355,7 +374,7 @@ To update the demo later, upload the changed files again or `git push` again.
 | Option | Cost | Good for | Catch |
 |---|---|---|---|
 | **Your own laptop** | Free | Interview demos: run `local_cluster.py`, kill a leader live with `chaos_test.py` | Not online 24/7 |
-| **GitHub Actions** (already set up) | Free | Proof it works: every push runs 21 tests + chaos test; the green badge and logs are public | Not a live website |
+| **GitHub Actions** (already set up) | Free | Proof it works: every push runs 22 tests + chaos test; the green badge and logs are public | Not a live website |
 | **GitHub Codespaces** | Free monthly hours | Running the full Docker Compose setup in the browser when your laptop can't | Stops when idle; link is temporary |
 | **Hugging Face Spaces** | Free | Always-reachable public demo link | Sleeps when idle, data not persistent |
 | **AWS Free plan** (Part 3 below) | $0 on the Free plan, using credits | Real cloud experience; "deployed on AWS" on the resume | Needs a card; account suspends after 6 months unless upgraded |
@@ -510,7 +529,7 @@ Replace the numbers with **your own measurements** from Phase 12.
 > **VaultMesh — Distributed Fault-Tolerant Key-Value Store** · Python, asyncio, FastAPI, Docker, AWS EC2 · [GitHub] [Live demo]
 > * Implemented the **Raft consensus algorithm** from scratch (leader election, log replication, majority commit, ReadIndex linearizable reads) and sharded data across Raft groups via a **consistent-hashing** gateway with 128 virtual nodes, moving only ~1/N of keys on rebalance.
 > * Built a crash-safe **write-ahead log** (CRC32 checksums, fsync, torn-write recovery) with group commit; profiled and removed an HTTP-client bottleneck to raise throughput **9×** to **1,400 writes/sec** (p99 93 ms).
-> * Verified with **21 pytest** tests (network partitions, crash recovery) and a chaos test that SIGKILLs leaders under load: **0 of 10,000+** acknowledged writes lost, **~650 ms** average failover; deployed with **Docker Compose on AWS EC2** with GitHub Actions CI.
+> * Verified with **22 pytest** tests (network partitions, crash recovery) and a chaos test that SIGKILLs leaders under load: **0 of 10,000+** acknowledged writes lost, **~650 ms** average failover; deployed with **Docker Compose on AWS EC2** with GitHub Actions CI.
 
 ---
 

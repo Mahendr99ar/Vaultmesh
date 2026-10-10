@@ -3,97 +3,766 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>VaultMesh Cluster</title>
+<title>VaultMesh</title>
+<meta name="description" content="Live view of VaultMesh, a sharded key-value store replicated with Raft. Crash a leader and watch the cluster recover.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --muted:#6b7280; --line:#e5e7eb;
-          --leader:#0f766e; --follower:#475569; --candidate:#b45309; --down:#b91c1c; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#0f1218; --card:#171b23; --ink:#e6e8ec; --muted:#9aa3b2; --line:#272d38;
-            --leader:#2dd4bf; --follower:#94a3b8; --candidate:#f59e0b; --down:#f87171; }
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-         background:var(--bg); color:var(--ink); }
-  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin: 0 0 20px; }
-  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
-  .card h2 { font-size: 15px; margin:0 0 10px; }
-  table { width:100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { text-align:left; padding:6px 4px; border-bottom:1px solid var(--line); }
-  th { color:var(--muted); font-weight:500; font-size:12px; }
-  .role { font-weight:600; }
-  .leader { color:var(--leader); } .follower { color:var(--follower); }
-  .candidate { color:var(--candidate); } .down { color:var(--down); }
-  form { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
-  input { flex:1 1 140px; padding:8px 10px; border:1px solid var(--line); border-radius:6px;
-          background:var(--bg); color:var(--ink); font:inherit; }
-  button { padding:8px 14px; border:0; border-radius:6px; background:var(--ink); color:var(--card);
-           font:inherit; cursor:pointer; }
-  button.ghost { background:transparent; color:var(--ink); border:1px solid var(--line); }
-  pre { margin:0; padding:10px; background:var(--bg); border-radius:6px; overflow:auto;
-        font-size:12px; min-height:48px; white-space:pre-wrap; }
-  .console { margin-top:16px; }
+/* ======================================================= tokens
+   Night (default) and morning palettes. The sky is drawn on a canvas from
+   --sky-top / --sky-mid / --sky-low; everything else sits on glass over it. */
+:root {
+  --sky-top: #0B2230;
+  --sky-mid: #173C4C;
+  --sky-low: #6B5A47;
+  --text: #F4F1EA;
+  --text-soft: rgba(244, 241, 234, .72);
+  --text-faint: rgba(244, 241, 234, .46);
+  --glass: rgba(14, 30, 40, .48);
+  --glass-strong: rgba(10, 22, 30, .72);
+  --glass-line: rgba(244, 241, 234, .14);
+  --leader: #F2B42B;
+  --follower: #CFE3EA;
+  --down: #FF7A70;
+  --data: #6FD8C6;
+  --latency: #A9B8FF;
+  --shard-1: #6FD8C6;
+  --shard-2: #A9B8FF;
+  --shard-3: #F29BC6;
+  --shard-4: #F4B36A;
+  --font: "Outfit", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --sky-top: #9FC3D3;
+  --sky-mid: #D7E6EA;
+  --sky-low: #F3D9B8;
+  --text: #13262F;
+  --text-soft: rgba(19, 38, 47, .74);
+  --text-faint: rgba(19, 38, 47, .5);
+  --glass: rgba(255, 255, 255, .5);
+  --glass-strong: rgba(255, 255, 255, .78);
+  --glass-line: rgba(19, 38, 47, .14);
+  --leader: #C98500;
+  --follower: #2D4D5C;
+  --down: #D2392F;
+  --data: #0E8A77;
+  --latency: #4555C8;
+  --shard-1: #0E8A77;
+  --shard-2: #4555C8;
+  --shard-3: #B54A86;
+  --shard-4: #B8691B;
+  color-scheme: light;
+}
+
+/* ======================================================= base */
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  margin: 0; min-height: 100vh; color: var(--text); background: var(--sky-top);
+  font: 400 15px/1.55 var(--font); font-variant-numeric: tabular-nums;
+}
+#sky { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; display: block; }
+.layer { position: relative; z-index: 1; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.glass {
+  background: var(--glass); border: 1px solid var(--glass-line);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2);
+}
+
+/* ======================================================= hero */
+.hero { min-height: 100svh; display: grid; grid-template-rows: auto 1fr auto; padding: 22px 20px 26px; }
+.top { display: flex; justify-content: center; }
+.title-pill {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px 6px 10px;
+  border-radius: 999px; font-weight: 500; font-size: 14px; letter-spacing: .01em;
+}
+.title-pill svg { width: 16px; height: 16px; }
+
+.center { display: grid; place-content: center; text-align: center; padding: 24px 0; }
+.big {
+  margin: 0; font-weight: 200; line-height: .95; letter-spacing: -0.035em;
+  font-size: clamp(56px, 9.6vw, 150px); white-space: nowrap;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: baseline; gap: .22em;
+  text-shadow: 0 2px 30px rgba(0, 0, 0, .18);
+}
+.big .left { text-align: right; }
+.big .right { text-align: left; }
+.big .sep { font-weight: 200; opacity: .8; }
+.big span.swap { animation: swap .5s ease; }
+@keyframes swap { from { opacity: 0; filter: blur(8px); transform: translateY(6px); } to { opacity: 1; filter: none; transform: none; } }
+.labels {
+  display: grid; grid-template-columns: 1fr auto 1fr; gap: .22em; margin-top: 14px;
+  font-size: clamp(14px, 1.4vw, 17px); color: var(--text-soft); font-weight: 400;
+}
+.labels .left { text-align: right; padding-right: .4em; }
+.labels .right { text-align: left; padding-left: .4em; }
+.labels .sep { visibility: hidden; font-size: clamp(56px, 9.6vw, 150px); line-height: 0; font-weight: 200; }
+.status-line { margin: 26px auto 0; max-width: 46ch; font-size: 15px; color: var(--text-soft); min-height: 1.6em; }
+.status-line strong { color: var(--text); font-weight: 500; }
+.traffic-line { margin: 8px 0 0; font-size: 14px; color: var(--text-faint); min-height: 1.5em; }
+
+.bottom { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 12px; }
+.corner {
+  width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; cursor: pointer;
+  color: var(--text);
+}
+.corner svg { width: 18px; height: 18px; }
+.to-console {
+  justify-self: end; display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px;
+  border-radius: 12px; color: var(--text); text-decoration: none; font-size: 14px; font-weight: 500;
+}
+.to-console svg { width: 15px; height: 15px; }
+.bar {
+  display: flex; align-items: center; gap: 2px; padding: 6px; border-radius: 16px;
+  background: var(--glass-strong);
+}
+.bar button {
+  width: 46px; height: 42px; border: 0; border-radius: 11px; background: transparent; cursor: pointer;
+  display: grid; place-items: center; color: var(--text); transition: background .15s;
+}
+.bar button:hover:not(:disabled) { background: var(--glass-line); }
+.bar button:disabled { opacity: .35; cursor: not-allowed; }
+.bar button svg { width: 20px; height: 20px; }
+.bar .divider { width: 1px; height: 24px; background: var(--glass-line); margin: 0 6px; }
+.bar .crash { color: var(--down); }
+.bar .play[aria-pressed="true"] { color: var(--data); }
+.shard-dots { display: flex; gap: 6px; justify-content: center; margin-top: 10px; }
+.shard-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); transition: background .2s, transform .2s; }
+.shard-dots i.on { background: var(--text); transform: scale(1.3); }
+.keys-hint { font-size: 12px; color: var(--text-faint); text-align: center; margin: 8px 0 0; }
+.keys-hint kbd { font: inherit; border: 1px solid var(--glass-line); border-radius: 5px; padding: 0 5px; }
+
+.toast {
+  position: fixed; left: 50%; top: 70px; transform: translateX(-50%) translateY(-10px); z-index: 5;
+  padding: 10px 16px; border-radius: 12px; font-size: 14px; opacity: 0; pointer-events: none;
+  transition: opacity .25s, transform .25s; max-width: calc(100vw - 32px);
+}
+.toast.show { opacity: 1; transform: translateX(-50%); }
+
+/* ======================================================= console (below the fold) */
+.console { max-width: 1180px; margin: 0 auto; padding: 40px 16px 30px; }
+.console h2 { font-weight: 300; font-size: clamp(28px, 3.4vw, 40px); letter-spacing: -0.02em; margin: 0 0 6px; }
+.console .intro { color: var(--text-soft); max-width: 62ch; margin: 0 0 22px; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.panel { border-radius: 18px; padding: 18px; min-width: 0; }
+.panel h3 { margin: 0 0 10px; font-weight: 500; font-size: 17px; display: flex; justify-content: space-between; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.panel h3 small { font-weight: 400; color: var(--text-faint); font-size: 13px; }
+.span-8 { grid-column: span 8; } .span-4 { grid-column: span 4; } .span-12 { grid-column: span 12; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-weight: 400; color: var(--text-faint); padding: 4px 6px; border-bottom: 1px solid var(--glass-line); white-space: nowrap; }
+td { padding: 7px 6px; border-bottom: 1px solid var(--glass-line); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+.num { text-align: right; }
+.role { font-weight: 500; }
+.role.leader { color: var(--leader); } .role.follower { color: var(--text-soft); }
+.role.candidate { color: var(--latency); } .role.down { color: var(--down); }
+.shard-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; }
+
+.stats { display: flex; flex-wrap: wrap; gap: 26px; margin-bottom: 8px; }
+.stat b { display: block; font-weight: 200; font-size: 40px; line-height: 1.05; letter-spacing: -0.02em; }
+.stat span { font-size: 13px; color: var(--text-faint); }
+.stat.err b { color: var(--down); }
+.chart-box { position: relative; }
+#chart { width: 100%; height: 200px; display: block; }
+#chart .grid-line { stroke: var(--glass-line); }
+#chart .axis { fill: var(--text-faint); font-size: 11px; font-family: var(--font); }
+#chart .ops { fill: none; stroke: var(--data); stroke-width: 2; }
+#chart .ops-area { fill: var(--data); opacity: .14; }
+#chart .p99 { fill: none; stroke: var(--latency); stroke-width: 1.5; stroke-dasharray: 4 3; }
+#chart .errbar { fill: var(--down); }
+#chart .crash-line { stroke: var(--down); stroke-width: 1.5; }
+#chart .crash-label { fill: var(--down); font-size: 11px; font-weight: 500; font-family: var(--font); }
+.chart-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-faint); font-size: 14px; margin: 0; }
+.chart-empty[hidden] { display: none; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--text-faint); margin-top: 6px; }
+.legend i { display: inline-block; width: 14px; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
+
+.timeline { list-style: none; margin: 0; padding: 0; max-height: 330px; overflow: auto; }
+.timeline li { display: grid; grid-template-columns: 62px 1fr; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--glass-line); font-size: 14px; }
+.timeline li:last-child { border-bottom: 0; }
+.timeline time { color: var(--text-faint); font-size: 12px; padding-top: 2px; }
+.timeline div { padding-left: 10px; border-left: 2px solid var(--glass-line); color: var(--text-soft); }
+.timeline strong { color: var(--text); font-weight: 500; }
+.timeline .k-leader { border-color: var(--leader); }
+.timeline .k-down { border-color: var(--down); }
+.timeline .k-up { border-color: var(--data); }
+
+.explorer { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 24px; align-items: start; }
+#ring { width: 100%; max-width: 230px; height: auto; display: block; }
+#ring text { font-family: var(--font); }
+.ring-caption { font-size: 13px; color: var(--text-faint); margin: 6px 0 0; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+label { display: block; font-size: 13px; color: var(--text-faint); margin-bottom: 4px; }
+input[type=text] {
+  width: 100%; padding: 11px 13px; border-radius: 11px; border: 1px solid var(--glass-line);
+  background: var(--glass); font-size: 15px;
+}
+input[type=text]:focus { outline: none; border-color: var(--text-soft); }
+.actions { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.btn {
+  padding: 9px 16px; border-radius: 11px; border: 1px solid var(--glass-line); cursor: pointer;
+  background: var(--glass); font-weight: 500; transition: background .15s;
+}
+.btn:hover { background: var(--glass-line); }
+.btn.primary { background: var(--text); color: var(--sky-top); border-color: var(--text); }
+.result { min-height: 1.5em; font-size: 14px; color: var(--text-soft); margin: 0 0 8px; }
+.result strong { font-weight: 500; }
+.result.ok strong { color: var(--data); }
+.result.fail strong { color: var(--down); }
+pre {
+  margin: 0; padding: 12px; border-radius: 11px; background: var(--glass); border: 1px solid var(--glass-line);
+  font: 13px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; min-height: 66px;
+}
+.foot { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 30px 0 6px; font-size: 13px; color: var(--text-faint); }
+.foot a { color: inherit; }
+
+@media (max-width: 900px) {
+  .span-8, .span-4 { grid-column: span 12; }
+  .explorer { grid-template-columns: 1fr; }
+  #ring { margin: 0 auto; }
+}
+@media (max-width: 560px) {
+  .hero { padding: 16px 12px 18px; }
+  .big, .labels .sep { font-size: clamp(42px, 14vw, 72px); }
+  .bottom { grid-template-columns: auto 1fr auto; }
+  .bottom > div { justify-self: center; }
+  .to-console span { display: none; }
+  .bar button { width: 40px; }
+  .fields { grid-template-columns: 1fr; }
+  .keys-hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .big span.swap { animation: none; }
+  .toast, .bar button, .shard-dots i { transition: none; }
+}
 </style>
 </head>
 <body>
-<main>
-  <h1>VaultMesh cluster</h1>
-  <p class="sub">Sharded key-value store · each shard is a 3-node Raft group · refreshes every second</p>
+<canvas id="sky" aria-hidden="true"></canvas>
 
-  <div class="grid" id="shards"></div>
+<div class="layer">
+  <!-- ===================================================== hero -->
+  <section class="hero" aria-label="Cluster overview">
+    <div class="top">
+      <div class="title-pill glass">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="3" r="2.2" fill="var(--leader)"/><circle cx="3" cy="12.5" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="13" cy="12.5" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 5 4 10.6M9 5l3 5.6M5 12.5h6" stroke="currentColor" stroke-width="1.2"/></svg>
+        VaultMesh
+      </div>
+    </div>
 
-  <div class="card console">
-    <h2>Try it</h2>
-    <form id="f" onsubmit="return false">
-      <input id="k" placeholder="key" value="user:42">
-      <input id="v" placeholder="value (for PUT)" value="Mahendra">
-      <button onclick="op('PUT')">PUT</button>
-      <button class="ghost" onclick="op('GET')">GET</button>
-      <button class="ghost" onclick="op('DELETE')">DELETE</button>
-    </form>
-    <pre id="out">Responses appear here, with the shard and node that served them.</pre>
-  </div>
-</main>
+    <div class="center">
+      <h1 class="big" aria-live="polite"><span class="left" id="big-left">–</span><span class="sep">·</span><span class="right" id="big-right">–</span></h1>
+      <div class="labels" aria-hidden="true"><span class="left" id="lab-left">Connecting</span><span class="sep">·</span><span class="right" id="lab-right">to the cluster</span></div>
+      <p class="status-line" id="status-line">Reading node status.</p>
+      <p class="traffic-line" id="traffic-line"></p>
+    </div>
+
+    <div>
+      <div class="bottom">
+        <button class="corner glass" id="theme" type="button" aria-label="Switch to morning theme" title="Switch theme"></button>
+        <div>
+          <div class="bar glass" role="toolbar" aria-label="Cluster controls">
+            <button type="button" id="prev" aria-label="Previous shard" title="Previous shard (←)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM19 5v14L9 12z"/></svg></button>
+            <button type="button" id="play" class="play" aria-pressed="false" aria-label="Start traffic" title="Start or stop traffic (space)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg></button>
+            <button type="button" id="next" aria-label="Next shard" title="Next shard (→)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM5 5v14l10-7z"/></svg></button>
+            <span class="divider" aria-hidden="true"></span>
+            <button type="button" id="crash" class="crash" aria-label="Crash this shard's leader for 4 seconds" title="Crash the leader for 4 s (C)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg></button>
+          </div>
+          <div class="shard-dots" id="shard-dots" aria-hidden="true"></div>
+        </div>
+        <a class="to-console glass" href="#console"><span>Open console</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5"/></svg></a>
+      </div>
+      <p class="keys-hint">Keyboard: <kbd>←</kbd> <kbd>→</kbd> switch shard, <kbd>space</kbd> traffic, <kbd>C</kbd> crash the leader</p>
+    </div>
+  </section>
+
+  <div class="toast glass" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- ===================================================== console -->
+  <main class="console" id="console">
+    <h2>Console</h2>
+    <p class="intro">Each shard keeps three copies of its keys. One copy is the leader and orders every write; a write is confirmed once two of the three have saved it to disk. If the leader stops answering, the other two elect a new one.</p>
+
+    <div class="grid">
+      <div class="panel glass span-12">
+        <h3>Replicas <small>updated twice a second</small></h3>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>Shard</th><th>Node</th><th>Role</th><th class="num">Term</th><th class="num">Log entries</th><th class="num">Committed</th><th class="num">Keys</th></tr></thead>
+          <tbody id="replicas"></tbody>
+        </table></div>
+      </div>
+
+      <div class="panel glass span-8">
+        <h3>Live traffic <small>from this browser</small></h3>
+        <div class="stats">
+          <div class="stat"><b id="s-ops">0</b><span>requests per second</span></div>
+          <div class="stat"><b id="s-p99">–</b><span>p99 latency</span></div>
+          <div class="stat"><b id="s-acked">0</b><span>writes confirmed</span></div>
+          <div class="stat err"><b id="s-err">0</b><span>failed requests</span></div>
+        </div>
+        <div class="chart-box">
+          <svg id="chart" role="img" aria-label="Requests per second over the last 60 seconds"></svg>
+          <p class="chart-empty" id="chart-empty">Press play in the control bar to send traffic.</p>
+        </div>
+        <div class="legend"><span><i style="border-color:var(--data)"></i>Requests per second</span><span><i style="border-color:var(--latency);border-top-style:dashed"></i>p99 latency (ms)</span><span><i style="border-color:var(--down)"></i>Leader crashed</span></div>
+      </div>
+
+      <div class="panel glass span-4">
+        <h3>What just happened</h3>
+        <ol class="timeline" id="timeline" aria-live="polite"></ol>
+      </div>
+
+      <div class="panel glass span-12">
+        <h3>Read and write keys <small>keys are placed on a hash ring</small></h3>
+        <div class="explorer">
+          <div>
+            <svg id="ring" viewBox="0 0 240 240" role="img" aria-label="Consistent hash ring"></svg>
+            <p class="ring-caption" id="ring-caption">Loading the ring.</p>
+          </div>
+          <form onsubmit="return false">
+            <div class="fields">
+              <div><label for="k">Key</label><input type="text" id="k" value="user:42" autocomplete="off" spellcheck="false"></div>
+              <div><label for="v">Value</label><input type="text" id="v" value="Mahendra" autocomplete="off"></div>
+            </div>
+            <div class="actions">
+              <button class="btn primary" type="button" data-op="PUT">Write</button>
+              <button class="btn" type="button" data-op="GET">Read</button>
+              <button class="btn" type="button" data-op="DELETE">Delete</button>
+            </div>
+            <p class="result" id="result" aria-live="polite">Write a key to see which shard and node store it.</p>
+            <pre id="out">{}</pre>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="foot">
+      <span>VaultMesh by Mahendra Meena. Raft consensus, write-ahead log, consistent hashing.</span>
+      <a href="https://github.com/Mahendr99ar/vaultmesh">Source on GitHub</a>
+    </div>
+  </main>
+</div>
+
 <script>
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const CRASH_SECONDS = 4;
 
-async function refresh() {
-  try {
-    const r = await fetch("/cluster");
-    const data = await r.json();
-    document.getElementById("shards").innerHTML = Object.entries(data.shards).map(([shard, nodes]) => `
-      <div class="card"><h2>${esc(shard)}</h2>
-      <table><thead><tr><th>Node</th><th>Role</th><th>Term</th><th>Commit</th><th>Log</th><th>Keys</th></tr></thead>
-      <tbody>${nodes.map(n => n.up ? `
-        <tr><td>${esc(n.id)}</td><td class="role ${esc(n.role)}">${esc(n.role)}</td>
-        <td>${n.term}</td><td>${n.commit_index}</td><td>${n.log_size}</td><td>${n.keys}</td></tr>` : `
-        <tr><td>${esc(n.address)}</td><td class="role down">down</td><td colspan="4"></td></tr>`).join("")}
-      </tbody></table></div>`).join("");
-  } catch (e) { /* gateway restarting */ }
+const state = { shards: {}, order: [], focus: 0, addrToId: {}, prev: {}, crash: {}, events: [], ring: null, lastRing: null, connected: false };
+
+/* ============================================================ theme */
+const ICON_MOON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>';
+const ICON_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>';
+const theme = () => document.documentElement.dataset.theme === "light" ? "light" : "night";
+function applyThemeButton() {
+  const night = theme() === "night";
+  $("theme").innerHTML = night ? ICON_SUN : ICON_MOON;
+  $("theme").setAttribute("aria-label", night ? "Switch to morning theme" : "Switch to night theme");
 }
+try {
+  const saved = localStorage.getItem("vm-theme");
+  if (saved === "light") document.documentElement.dataset.theme = "light";   // night is the default look
+} catch (e) {}
+applyThemeButton();
 
-async function op(method) {
-  const key = document.getElementById("k").value.trim();
-  if (!key) return;
-  const init = { method };
-  if (method === "PUT") {
-    init.body = JSON.stringify({ value: document.getElementById("v").value });
-    init.headers = { "content-type": "application/json" };
+/* ============================================================ sky: the live cluster drawn as constellations */
+const sky = (() => {
+  const cv = $("sky"), ctx = cv.getContext("2d");
+  let W = 0, H = 0, colors = {}, stars = [];
+  function resize() {
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    W = innerWidth; H = innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    stars = Array.from({ length: Math.round(W * H / 9000) }, () => ({ x: Math.random() * W, y: Math.random() * H * .75, r: Math.random() * 1.1 + .2, a: Math.random() * .6 + .15, tw: Math.random() * 6 }));
   }
-  const t0 = performance.now();
-  const r = await fetch("/kv/" + encodeURIComponent(key), init);
-  const ms = (performance.now() - t0).toFixed(1);
-  const text = await r.text();
-  document.getElementById("out").textContent =
-    `${method} ${key} -> HTTP ${r.status} in ${ms} ms\n` +
-    `shard=${r.headers.get("x-shard")} served-by=${r.headers.get("x-served-by")} attempts=${r.headers.get("x-attempts")}\n` + text;
-  refresh();
+  function recolor() {
+    colors = { top: css("--sky-top"), mid: css("--sky-mid"), low: css("--sky-low"), text: css("--text"),
+      leader: css("--leader"), follower: css("--follower"), down: css("--down") };
+  }
+  function layout() {
+    // Constellations sit beside the centred text, not under it: two shards go to the
+    // outer thirds; more shards spread along the lower band.
+    const n = Math.max(1, state.order.length), narrow = W < 700;
+    const R = narrow ? Math.min(W / (n * 4.2), 58) : n <= 2 ? Math.min(W * .075, H * .13, 105) : Math.min(W / (n * 6), H * .09, 80);
+    return state.order.map((shard, i) => {
+      let cx, cy;
+      if (narrow) { cx = W * (i + 1) / (n + 1); cy = H * .19; }
+      else if (n <= 2) { cx = n === 1 ? W * .15 : W * (i === 0 ? .14 : .86); cy = H * .6; }
+      else { cx = W * (.12 + .76 * i / (n - 1)); cy = H * .8; }
+      return { shard, cx, cy, R, pts: [[0, -1], [-.87, .5], [.87, .5]].map(([dx, dy]) => [cx + dx * R, cy + dy * R]) };
+    });
+  }
+  function dot(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); }
+  function frame(now) {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, colors.top); g.addColorStop(.62, colors.mid); g.addColorStop(1, colors.low);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    if (theme() === "night") {
+      ctx.fillStyle = colors.text;
+      for (const s of stars) {
+        ctx.globalAlpha = reduceMotion ? s.a : s.a * (.65 + .35 * Math.sin(now / 900 + s.tw));
+        dot(s.x, s.y, s.r); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+    const hg = ctx.createRadialGradient(W / 2, H * 1.05, 0, W / 2, H * 1.05, Math.max(W, H) * .7);
+    hg.addColorStop(0, theme() === "night" ? "rgba(242,180,43,.16)" : "rgba(255,214,150,.45)"); hg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = hg; ctx.fillRect(0, 0, W, H);
+
+    for (const c of layout()) {
+      const nodes = state.shards[c.shard] || [];
+      const base = state.order[state.focus] === c.shard ? 1 : .42;
+      const li = nodes.findIndex(x => x.role === "leader");
+      for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) {
+        const live = li >= 0 && (i === li || j === li) && nodes[i]?.role !== "down" && nodes[j]?.role !== "down";
+        ctx.strokeStyle = live ? colors.leader : colors.text;
+        ctx.globalAlpha = base * (live ? .5 : .14); ctx.lineWidth = live ? 1.4 : 1;
+        ctx.beginPath(); ctx.moveTo(...c.pts[i]); ctx.lineTo(...c.pts[j]); ctx.stroke();
+      }
+      if (!reduceMotion && li >= 0) {
+        nodes.forEach((x, j) => {
+          if (j === li || x.role === "down") return;
+          const t = ((now + j * 180) % 1100) / 1100, [x1, y1] = c.pts[li], [x2, y2] = c.pts[j];
+          ctx.globalAlpha = base * Math.sin(t * Math.PI); ctx.fillStyle = colors.leader;
+          dot(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, 2.6); ctx.fill();
+        });
+      }
+      nodes.forEach((x, i) => {
+        const [px, py] = c.pts[i];
+        if (x.role === "leader") {
+          const glow = ctx.createRadialGradient(px, py, 0, px, py, 34);
+          glow.addColorStop(0, colors.leader); glow.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.globalAlpha = base * (reduceMotion ? .45 : .35 + .15 * Math.sin(now / 500));
+          ctx.fillStyle = glow; dot(px, py, 34); ctx.fill();
+          ctx.globalAlpha = base; ctx.fillStyle = colors.leader; dot(px, py, 7); ctx.fill();
+        } else if (x.role === "down") {
+          ctx.globalAlpha = base * (reduceMotion ? .9 : .55 + .35 * Math.sin(now / 160));
+          ctx.strokeStyle = colors.down; ctx.lineWidth = 1.6; ctx.setLineDash([3, 3]);
+          dot(px, py, 7); ctx.stroke(); ctx.setLineDash([]);
+        } else {
+          ctx.globalAlpha = base * .9; ctx.fillStyle = colors.follower; dot(px, py, 4.5); ctx.fill();
+        }
+        ctx.globalAlpha = base * .8; ctx.fillStyle = x.role === "down" ? colors.down : colors.text;
+        ctx.font = "400 11px Outfit, system-ui, sans-serif"; ctx.textAlign = "center";
+        ctx.fillText(x.id, px, py + (i === 0 ? -16 : 22));
+      });
+      ctx.globalAlpha = base * .7; ctx.fillStyle = colors.text; ctx.font = "500 12px Outfit, system-ui, sans-serif";
+      ctx.fillText(c.shard, c.cx, c.cy + c.R * .5 + 42);
+      ctx.globalAlpha = 1;
+    }
+    if (!reduceMotion) requestAnimationFrame(frame);
+  }
+  addEventListener("resize", () => { resize(); if (reduceMotion) frame(performance.now()); });
+  resize(); recolor(); requestAnimationFrame(frame);
+  return { recolor() { recolor(); if (reduceMotion) frame(performance.now()); }, redraw() { if (reduceMotion) frame(performance.now()); } };
+})();
+
+$("theme").addEventListener("click", () => {
+  if (theme() === "night") document.documentElement.dataset.theme = "light";
+  else delete document.documentElement.dataset.theme;
+  try { localStorage.setItem("vm-theme", theme()); } catch (e) {}
+  applyThemeButton(); sky.recolor(); drawChart(); drawRing(state.lastRing);
+});
+
+/* ============================================================ events + toast */
+const clock = () => new Date().toTimeString().slice(0, 8);
+function addEvent(kind, html) {
+  state.events.unshift({ t: clock(), kind, html });
+  state.events = state.events.slice(0, 40);
+  $("timeline").innerHTML = state.events.map(e => `<li><time>${e.t}</time><div class="k-${e.kind}">${e.html}</div></li>`).join("");
+}
+let toastTimer;
+function toast(html) {
+  const t = $("toast"); t.innerHTML = html; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 4200);
+}
+addEvent("info", "Page opened. Watching every node twice a second.");
+
+/* ============================================================ polling */
+function nodeView(n) {
+  if (!n.up) return { id: state.addrToId[n.address] || n.address, role: "down", label: "not answering" };
+  state.addrToId[n.address] = n.id;
+  if (n.paused) return { id: n.id, role: "down", label: "crashed", n };
+  return { id: n.id, role: n.role, label: n.role, n };
+}
+async function poll() {
+  try {
+    const data = await (await fetch("/cluster", { cache: "no-store" })).json();
+    state.order = Object.keys(data.shards);
+    for (const [shard, nodes] of Object.entries(data.shards)) {
+      state.shards[shard] = nodes.map(nodeView).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+      detect(shard);
+    }
+    state.connected = true;
+  } catch (e) { state.connected = false; }
+  render(); sky.redraw();
+}
+function detect(shard) {
+  const nodes = state.shards[shard];
+  const ln = nodes.find(x => x.role === "leader"), leader = ln ? ln.id : null;
+  const prev = state.prev[shard];
+  const now = Object.fromEntries(nodes.map(x => [x.id, x.role === "down" ? x.label : "up"]));
+  if (prev) {
+    for (const [id, s] of Object.entries(now)) {
+      const was = prev.nodes[id];
+      if (was === "up" && s !== "up") addEvent("down", `<strong>${esc(id)}</strong> stopped answering${s === "crashed" ? " (simulated crash)" : ""}.`);
+      if (was && was !== "up" && s === "up") addEvent("up", `<strong>${esc(id)}</strong> is back and rejoined ${esc(shard)} as a ${esc(nodes.find(x => x.id === id).role)}.`);
+    }
+    if (prev.leader !== leader) {
+      if (leader) {
+        const c = state.crash[shard];
+        if (c && !c.done) {
+          Object.assign(c, { done: true, ms: Math.round(performance.now() - c.at), doneAt: performance.now(), leader });
+          addEvent("leader", `<strong>${esc(leader)}</strong> won the election for term ${ln.n.term} in ${esc(shard)}. Failover took <strong>${c.ms} ms</strong>.`);
+          toast(`<strong>${esc(leader)}</strong> took over ${esc(shard)} in <strong>${c.ms} ms</strong>. No confirmed write was lost.`);
+        } else addEvent("leader", `<strong>${esc(leader)}</strong> leads ${esc(shard)} in term ${ln.n.term}.`);
+      } else if (prev.leader) addEvent("info", `${esc(shard)} has no leader. Its followers are holding an election.`);
+    }
+  } else if (leader) addEvent("leader", `<strong>${esc(leader)}</strong> leads ${esc(shard)} in term ${ln.n.term}.`);
+  state.prev[shard] = { leader, nodes: now };
 }
 
-refresh();
-setInterval(refresh, 1000);
+/* ============================================================ hero */
+function setBig(id, text) {
+  const el = $(id);
+  if (el.textContent === text) return;
+  el.textContent = text;
+  el.classList.remove("swap"); void el.offsetWidth; el.classList.add("swap");
+}
+function render() {
+  if (!state.connected) {
+    setBig("big-left", "offline"); setBig("big-right", "–");
+    $("lab-left").textContent = "Gateway"; $("lab-right").textContent = "Retrying";
+    $("status-line").textContent = "Cannot reach the cluster. Start it with python scripts/local_cluster.py.";
+    return;
+  }
+  if (state.focus >= state.order.length) state.focus = 0;
+  const shard = state.order[state.focus], nodes = state.shards[shard] || [];
+  const ln = nodes.find(x => x.role === "leader");
+  const term = Math.max(0, ...nodes.filter(x => x.n).map(x => x.n.term));
+  const down = nodes.filter(x => x.role === "down").length;
+  const c = state.crash[shard];
+  const recent = c && c.done && performance.now() - c.doneAt < 8000;
+
+  if (c && !c.done) {
+    setBig("big-left", "electing"); setBig("big-right", `term ${term}`);
+    $("lab-left").textContent = `${shard} lost its leader`; $("lab-right").textContent = "Votes in progress";
+  } else if (recent) {
+    setBig("big-left", c.leader); setBig("big-right", `${c.ms} ms`);
+    $("lab-left").textContent = `New leader of ${shard}`; $("lab-right").textContent = "Failover time";
+  } else if (ln) {
+    setBig("big-left", ln.id); setBig("big-right", `term ${term}`);
+    $("lab-left").textContent = `Leader of ${shard}`; $("lab-right").textContent = "Election term";
+  } else {
+    setBig("big-left", "electing"); setBig("big-right", `term ${term}`);
+    $("lab-left").textContent = `${shard} has no leader`; $("lab-right").textContent = "Election term";
+  }
+
+  let line;
+  if (c && !c.done) line = `<strong>${esc(c.node)}</strong> crashed. The two followers stopped hearing heartbeats and started an election.`;
+  else if (down) line = `Running on ${3 - down} of 3 replicas. Writes still succeed because 2 nodes can agree.`;
+  else if (ln) line = `All 3 replicas healthy. ${ln.n.keys.toLocaleString()} keys and ${ln.n.commit_index.toLocaleString()} committed log entries.`;
+  else line = "Waiting for a leader.";
+  $("status-line").innerHTML = line;
+
+  const cooling = c && performance.now() - c.at < (CRASH_SECONDS + 1.5) * 1000;
+  $("crash").disabled = !(ln && !down) || cooling;
+  $("crash").setAttribute("aria-label", ln ? `Crash ${ln.id}, the leader of ${shard}, for ${CRASH_SECONDS} seconds` : "No leader to crash right now");
+  $("shard-dots").innerHTML = state.order.map((_, i) => `<i class="${i === state.focus ? "on" : ""}"></i>`).join("");
+  $("prev").disabled = $("next").disabled = state.order.length < 2;
+
+  $("replicas").innerHTML = state.order.map((s, si) => (state.shards[s] || []).map((x, i) => {
+    const sw = i === 0 ? `<span class="shard-swatch" style="background:var(--shard-${si % 4 + 1})"></span>${esc(s)}` : "";
+    if (!x.n) return `<tr><td>${sw}</td><td>${esc(x.id)}</td><td class="role down">${esc(x.label)}</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">–</td></tr>`;
+    return `<tr><td>${sw}</td><td>${esc(x.id)}</td><td class="role ${esc(x.role)}">${esc(x.label)}</td><td class="num">${x.n.term}</td><td class="num">${x.n.log_size.toLocaleString()}</td><td class="num">${x.n.commit_index.toLocaleString()}</td><td class="num">${x.n.keys.toLocaleString()}</td></tr>`;
+  }).join("")).join("");
+}
+
+/* ============================================================ controls */
+function focusShard(d) {
+  if (!state.order.length) return;
+  state.focus = (state.focus + d + state.order.length) % state.order.length;
+  render(); sky.redraw();
+}
+$("prev").addEventListener("click", () => focusShard(-1));
+$("next").addEventListener("click", () => focusShard(1));
+
+async function crashLeader() {
+  const shard = state.order[state.focus];
+  if (!shard || $("crash").disabled) return;
+  $("crash").disabled = true;
+  try {
+    const r = await fetch("/admin/crash", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ shard, seconds: CRASH_SECONDS }) });
+    const body = await r.json();
+    if (!r.ok) { toast(esc(body.detail || body.error)); return; }
+    state.crash[shard] = { at: performance.now(), node: body.crashed, done: false };
+    traffic.marks.push({ t: Date.now(), label: body.crashed });
+    addEvent("down", `You crashed <strong>${esc(body.crashed)}</strong>, the leader of ${esc(shard)}, for ${body.seconds} seconds.`);
+    poll();
+  } catch (e) { toast("Could not reach the gateway."); }
+}
+$("crash").addEventListener("click", crashLeader);
+
+addEventListener("keydown", (e) => {
+  if (e.target.closest("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "ArrowLeft") { focusShard(-1); e.preventDefault(); }
+  else if (e.key === "ArrowRight") { focusShard(1); e.preventDefault(); }
+  else if (e.key === " " && !e.target.closest("button, a")) { toggleTraffic(); e.preventDefault(); }
+  else if (e.key === "c" || e.key === "C") crashLeader();
+});
+
+/* ============================================================ traffic */
+const traffic = { on: false, current: [], buckets: [], acked: 0, errors: 0, marks: [], n: 0 };
+const WORKERS = 6;
+const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 4.5h4v15H6zM14 4.5h4v15h-4z"/></svg>';
+async function worker() {
+  while (traffic.on) {
+    const i = traffic.n++, write = Math.random() < .7, key = "live:" + (i % 500), t0 = performance.now();
+    let ok = false;
+    try {
+      const r = await fetch("/kv/" + encodeURIComponent(key), write
+        ? { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: "v" + i }) }
+        : { method: "GET" });
+      ok = r.status === 200 || r.status === 404;
+      if (ok && write) traffic.acked++;
+    } catch (e) {}
+    traffic.current.push({ ms: performance.now() - t0, ok });
+    if (!ok) { traffic.errors++; await new Promise(r => setTimeout(r, 100)); }
+  }
+}
+function toggleTraffic() {
+  traffic.on = !traffic.on;
+  const b = $("play");
+  b.innerHTML = traffic.on ? ICON_PAUSE : ICON_PLAY;
+  b.setAttribute("aria-pressed", String(traffic.on));
+  b.setAttribute("aria-label", traffic.on ? "Stop traffic" : "Start traffic");
+  if (traffic.on) {
+    addEvent("info", `Traffic started: ${WORKERS} parallel clients, 70% writes and 30% reads.`);
+    for (let i = 0; i < WORKERS; i++) worker();
+  } else {
+    addEvent("info", `Traffic stopped after ${traffic.acked.toLocaleString()} confirmed writes.`);
+    $("traffic-line").textContent = "";
+  }
+}
+$("play").addEventListener("click", toggleTraffic);
+
+const pct = (a, p) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p / 100 * s.length))]; };
+setInterval(() => {
+  if (!traffic.on && !traffic.buckets.length) return;
+  const cur = traffic.current; traffic.current = [];
+  const lat = cur.map(x => x.ms);
+  traffic.buckets.push({ t: Date.now(), ops: cur.length, errs: cur.filter(x => !x.ok).length, p99: pct(lat, 99) });
+  traffic.buckets = traffic.buckets.slice(-60);
+  const last = traffic.buckets[traffic.buckets.length - 1];
+  $("s-ops").textContent = last.ops.toLocaleString();
+  $("s-p99").textContent = lat.length ? Math.round(last.p99) + " ms" : "–";
+  $("s-acked").textContent = traffic.acked.toLocaleString();
+  $("s-err").textContent = traffic.errors.toLocaleString();
+  if (traffic.on) $("traffic-line").textContent = `${last.ops} requests per second, p99 ${lat.length ? Math.round(last.p99) : "–"} ms, ${traffic.acked.toLocaleString()} writes confirmed, ${traffic.errors} failed`;
+  drawChart();
+}, 1000);
+
+function drawChart() {
+  const svg = $("chart"), W = Math.max(280, svg.clientWidth), H = 200, pad = { l: 36, r: 44, t: 18, b: 20 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const b = traffic.buckets;
+  if (!b.length) { svg.innerHTML = ""; return; }
+  $("chart-empty").hidden = true;
+  const t0 = Date.now() - 60000;
+  const x = t => pad.l + (W - pad.l - pad.r) * Math.max(0, t - t0) / 60000;
+  const maxOps = Math.max(10, ...b.map(d => d.ops)) * 1.15, maxLat = Math.max(50, ...b.map(d => d.p99)) * 1.15;
+  const y = v => H - pad.b - (H - pad.t - pad.b) * v / maxOps, yl = v => H - pad.b - (H - pad.t - pad.b) * v / maxLat;
+  let out = "";
+  for (let k = 0; k <= 3; k++) {
+    const yy = y(maxOps * k / 3);
+    out += `<line class="grid-line" x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}"/><text class="axis" x="${pad.l - 6}" y="${yy + 4}" text-anchor="end">${Math.round(maxOps * k / 3)}</text><text class="axis" x="${W - pad.r + 6}" y="${yl(maxLat * k / 3) + 4}">${Math.round(maxLat * k / 3)}</text>`;
+  }
+  out += `<text class="axis" x="${pad.l}" y="${H - 4}">60 s ago</text><text class="axis" x="${W - pad.r}" y="${H - 4}" text-anchor="end">now</text>`;
+  for (const m of traffic.marks.filter(m => m.t > t0)) {
+    const xx = x(m.t), right = xx > W - pad.r - 90;
+    out += `<line class="crash-line" x1="${xx}" x2="${xx}" y1="${pad.t}" y2="${H - pad.b}"/><text class="crash-label" x="${right ? xx - 4 : xx + 4}" y="${pad.t - 5}" text-anchor="${right ? "end" : "start"}">${esc(m.label)} crashed</text>`;
+  }
+  const pts = b.map(d => [x(d.t), y(d.ops)]);
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join("");
+  out += `<path class="ops-area" d="${line}L${pts[pts.length - 1][0]},${H - pad.b}L${pts[0][0]},${H - pad.b}Z"/><path class="ops" d="${line}"/>`;
+  out += `<path class="p99" d="${b.map((d, i) => (i ? "L" : "M") + x(d.t).toFixed(1) + "," + yl(d.p99).toFixed(1)).join("")}"/>`;
+  for (const d of b) if (d.errs) out += `<rect class="errbar" x="${x(d.t) - 2}" y="${y(d.errs)}" width="4" height="${H - pad.b - y(d.errs)}"/>`;
+  svg.innerHTML = out;
+}
+addEventListener("resize", () => { if (traffic.buckets.length) drawChart(); });
+
+/* ============================================================ hash ring + key console */
+const RC = 120, RR = 92;
+const ringXY = (f, r) => { const a = f * 2 * Math.PI - Math.PI / 2; return [RC + r * Math.cos(a), RC + r * Math.sin(a)]; };
+async function loadRing() {
+  try { state.ring = await (await fetch("/ring-map")).json(); drawRing(null); lookupKey(); }
+  catch (e) { $("ring-caption").textContent = "Could not load the hash ring."; }
+}
+function drawRing(info) {
+  state.lastRing = info;
+  if (!state.ring) return;
+  const col = s => `var(--shard-${state.ring.shards.indexOf(s) % 4 + 1})`;
+  let out = `<circle cx="${RC}" cy="${RC}" r="${RR}" fill="none" stroke="var(--glass-line)"/>`;
+  for (const [p, s] of state.ring.points) {
+    const [a, b] = ringXY(p, RR - 7), [c, d] = ringXY(p, RR + 7);
+    out += `<line x1="${a.toFixed(1)}" y1="${b.toFixed(1)}" x2="${c.toFixed(1)}" y2="${d.toFixed(1)}" stroke="${col(s)}" stroke-width="2"/>`;
+  }
+  if (info) {
+    const [mx, my] = ringXY(info.position, RR), [sx, sy] = ringXY(info.position, 44), [lx, ly] = ringXY(info.position, RR - 12);
+    out += `<line x1="${sx.toFixed(1)}" y1="${sy.toFixed(1)}" x2="${lx.toFixed(1)}" y2="${ly.toFixed(1)}" stroke="var(--text)" stroke-width="1.5"/>`;
+    out += `<circle cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="7" fill="var(--text)" stroke="var(--sky-top)" stroke-width="3"/>`;
+    out += `<text x="${RC}" y="${RC + 7}" text-anchor="middle" font-size="22" font-weight="300" style="fill:${col(info.shard)}">${esc(info.shard)}</text>`;
+  }
+  $("ring").innerHTML = out;
+}
+let lookupTimer;
+async function lookupKey() {
+  const key = $("k").value.trim();
+  if (!key) { drawRing(null); $("ring-caption").textContent = "Type a key to place it on the ring."; return; }
+  try {
+    const info = await (await fetch("/ring/" + encodeURIComponent(key))).json();
+    drawRing(info);
+    const n = state.ring.points.length;
+    $("ring-caption").textContent = `"${key}" lands at ${(info.position * 360).toFixed(1)}° and is stored on ${info.shard}. The ring has ${n} points, ${n / state.ring.shards.length} per shard.`;
+  } catch (e) {}
+}
+$("k").addEventListener("input", () => { clearTimeout(lookupTimer); lookupTimer = setTimeout(lookupKey, 120); });
+
+const VERB = { PUT: "Written", GET: "Read", DELETE: "Deleted" };
+document.querySelectorAll("[data-op]").forEach(btn => btn.addEventListener("click", async () => {
+  const op = btn.dataset.op, key = $("k").value.trim(), res = $("result");
+  if (!key) { res.className = "result fail"; res.innerHTML = "<strong>Enter a key first.</strong>"; $("k").focus(); return; }
+  const init = { method: op };
+  if (op === "PUT") { init.headers = { "content-type": "application/json" }; init.body = JSON.stringify({ value: $("v").value }); }
+  const t0 = performance.now();
+  try {
+    const r = await fetch("/kv/" + encodeURIComponent(key), init);
+    const ms = Math.round(performance.now() - t0), text = await r.text();
+    let pretty = text; try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (e) {}
+    const shard = r.headers.get("x-shard"), served = r.headers.get("x-served-by"), attempts = Number(r.headers.get("x-attempts") || 1);
+    const node = state.addrToId[served] || served;
+    if (r.ok) { res.className = "result ok"; res.innerHTML = `<strong>${VERB[op]}</strong> on ${esc(shard)} by leader ${esc(node)} in ${ms} ms${attempts > 1 ? `, after ${attempts} attempts while the leader changed` : ""}.`; }
+    else if (r.status === 404) { res.className = "result fail"; res.innerHTML = `<strong>Not found.</strong> Nothing is stored under "${esc(key)}" yet. Write it first.`; }
+    else { res.className = "result fail"; res.innerHTML = `<strong>Failed with HTTP ${r.status}.</strong> The shard may be electing a leader. Try again in a second.`; }
+    $("out").textContent = pretty;
+    poll();
+  } catch (e) { res.className = "result fail"; res.innerHTML = "<strong>Could not reach the gateway.</strong> Check that the cluster is running."; }
+}));
+
+/* ============================================================ start */
+poll(); setInterval(poll, 500); loadRing();
+setInterval(render, 1000);   // lets "failover time" hand back to the term after a few seconds
 </script>
 </body>
 </html>

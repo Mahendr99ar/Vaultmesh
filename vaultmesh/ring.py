@@ -47,6 +47,14 @@ class ConsistentHashRing:
             i = 0  # wrap around the ring
         return self._owners[self._positions[i]]
 
+    def position(self, key: str) -> float:
+        """Where a key sits on the ring, as a fraction of a full turn (0.0 to 1.0)."""
+        return _hash(key) / 2**64
+
+    def points(self) -> list[tuple[float, str]]:
+        """Every virtual node as (fraction of a full turn, shard), in ring order."""
+        return [(pos / 2**64, self._owners[pos]) for pos in self._positions]
+
     @property
     def nodes(self) -> set[str]:
         return set(self._owners.values())

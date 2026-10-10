@@ -10,6 +10,7 @@ Client API (normally called through the gateway):
     DELETE /kv/{key}
     GET    /status             role, term, leader, log and commit indexes
     GET    /health
+    POST   /admin/pause        body: {"seconds": 1-10}; simulate a crash (demo)
 
 A non-leader answers client calls with HTTP 503 and the header ``X-Raft-Leader: host:port``
 so the caller can retry against the real leader.
@@ -32,8 +33,15 @@ WRITE_TIMEOUT = 3.0
 READ_TIMEOUT = 2.0
 
 
+MAX_PAUSE_SECONDS = 10.0
+
+
 class PutBody(BaseModel):
     value: str
+
+
+class PauseBody(BaseModel):
+    seconds: float = 4.0
 
 
 def create_node_app(raft: RaftNode, kv: KVStateMachine, peer_addresses: dict[str, str]) -> FastAPI:
@@ -45,6 +53,14 @@ def create_node_app(raft: RaftNode, kv: KVStateMachine, peer_addresses: dict[str
         await raft.transport.close()
 
     app = FastAPI(title=f"VaultMesh node {raft.id}", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def crashed_nodes_are_silent(request: Request, call_next):
+        # During a simulated crash the node answers nothing except /status, so peers and the
+        # gateway see the same failures they would see from a dead machine.
+        if raft.paused and request.url.path.startswith(("/raft/", "/kv/")):
+            return JSONResponse(status_code=503, content={"error": "node_down"})
+        return await call_next(request)
 
     def not_leader(err: NotLeaderError) -> JSONResponse:
         leader_addr = peer_addresses.get(err.leader_id) if err.leader_id else None
@@ -107,5 +123,11 @@ def create_node_app(raft: RaftNode, kv: KVStateMachine, peer_addresses: dict[str
     @app.get("/health")
     async def health():
         return {"ok": True}
+
+    @app.post("/admin/pause")
+    async def pause(body: PauseBody):
+        seconds = max(1.0, min(MAX_PAUSE_SECONDS, body.seconds))
+        raft.pause(seconds)
+        return {"node": raft.id, "paused_for": seconds, "was_leader": raft.role.value == "leader"}
 
     return app

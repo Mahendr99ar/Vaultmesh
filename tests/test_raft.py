@@ -158,3 +158,21 @@ def test_follower_truncates_conflicting_entries(tmp_path):
         await node.stop()
 
     asyncio.run(scenario())
+
+
+async def test_simulated_crash_fails_over_and_old_leader_rejoins(cluster):
+    """The dashboard's "Crash leader" button: leader goes silent, a new one is elected,
+    and when the old leader comes back it steps down and catches up."""
+    old = await cluster.wait_for_leader()
+    await old.submit(put("before", "crash"))
+    old.pause(1.0)
+    assert old.paused
+
+    survivors = [i for i in cluster.ids if i != old.id]
+    new = await cluster.wait_for_leader(among=survivors)
+    await new.submit(put("during", "crash"))
+
+    await cluster.wait_until(lambda: not old.paused)
+    await cluster.wait_until(lambda: old.role == Role.FOLLOWER and old.leader_id == new.id
+                             and cluster.kvs[old.id].get("during") == "crash")
+    assert old.meta.term == new.meta.term

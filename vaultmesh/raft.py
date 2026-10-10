@@ -118,6 +118,7 @@ class RaftNode:
         self._heartbeat_task: asyncio.Task | None = None
         self._tasks: set[asyncio.Task] = set()
         self._stopped = False
+        self._paused_until = 0.0  # simulated crash (demo): node is silent until this loop time
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -136,6 +137,31 @@ class RaftNode:
         await asyncio.gather(*tasks, return_exceptions=True)
         self.log.close()
 
+    # ================================================================== simulated crash (demo)
+    @property
+    def paused(self) -> bool:
+        return self._loop is not None and self._loop.time() < self._paused_until
+
+    def pause(self, seconds: float) -> None:
+        """Make this node behave like a crashed machine for ``seconds``.
+
+        It sends nothing and (via the HTTP layer) answers nothing, so the rest of the group
+        sees exactly what a real crash or network cut looks like. Its disk state is kept, so on
+        resume it rejoins like a restarted node: a deposed leader sees the higher term and steps
+        down. Used by the dashboard's "Crash leader" button.
+        """
+        self._paused_until = self._loop.time() + seconds
+        if self._election_timer:
+            self._election_timer.cancel()
+        log.info("%s: simulated crash for %.1fs", self.id, seconds)
+        self._loop.call_later(seconds, self._resume)
+
+    def _resume(self) -> None:
+        if self._stopped or self.paused:
+            return
+        log.info("%s: back from simulated crash (term %d, role %s)", self.id, self.meta.term, self.role.value)
+        self._reset_election_timer()
+
     def _spawn(self, coro: Coroutine) -> asyncio.Task:
         task = self._loop.create_task(coro)
         self._tasks.add(task)
@@ -152,7 +178,7 @@ class RaftNode:
         self._election_timer = self._loop.call_later(timeout, self._start_election)
 
     def _start_election(self) -> None:
-        if self._stopped or self.role == Role.LEADER:
+        if self._stopped or self.paused or self.role == Role.LEADER:
             return
         term = self.meta.term + 1
         self.meta.update(term, self.id)          # vote for ourselves, persisted
@@ -244,7 +270,8 @@ class RaftNode:
     # ================================================================== replication (leader)
     async def _heartbeat_loop(self, term: int) -> None:
         while not self._stopped and self.role == Role.LEADER and self.meta.term == term:
-            self._broadcast_append_entries()
+            if not self.paused:
+                self._broadcast_append_entries()
             await asyncio.sleep(self.config.heartbeat_interval)
 
     def _broadcast_append_entries(self) -> None:
@@ -252,6 +279,8 @@ class RaftNode:
             self._replicate_to(peer)
 
     def _replicate_to(self, peer: str) -> None:
+        if self.paused:
+            return
         state = self._peers[peer]
         if state.in_flight:
             state.dirty = True  # send again as soon as the current RPC returns
@@ -262,7 +291,7 @@ class RaftNode:
     async def _append_loop(self, peer: str) -> None:
         state = self._peers[peer]
         try:
-            while not self._stopped and self.role == Role.LEADER:
+            while not self._stopped and not self.paused and self.role == Role.LEADER:
                 state.dirty = False
                 nxt = state.next_index
                 req = AppendRequest(
@@ -432,4 +461,5 @@ class RaftNode:
             "last_applied": self.last_applied,
             "log_size": self.log.last_index(),
             "peers": self.peer_ids,
+            "paused": self.paused,
         }

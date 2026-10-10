@@ -5,6 +5,8 @@
   node it tries the next replica with exponential backoff, so clients never see a failover.
 * ``GET /cluster`` collects ``/status`` from every node in parallel; ``GET /`` serves a live
   dashboard.
+* ``POST /admin/crash`` simulates a crash of a shard's leader for a few seconds (demo button).
+  It refuses unless all three replicas are healthy, so a shard can never lose its majority.
 """
 
 from __future__ import annotations
@@ -25,11 +27,11 @@ from .ring import ConsistentHashRing
 MAX_ATTEMPTS = 8
 
 
-def _is_not_leader(content: bytes) -> bool:
+def _error_code(content: bytes) -> str | None:
     try:
-        return json.loads(content).get("error") == "not_leader"
+        return json.loads(content).get("error")
     except (ValueError, AttributeError):
-        return False
+        return None
 
 
 def create_gateway_app(shards: dict[str, list[str]], vnodes: int = 128) -> FastAPI:
@@ -71,7 +73,15 @@ def create_gateway_app(shards: dict[str, list[str]], vnodes: int = 128) -> FastA
                 await asyncio.sleep(min(0.05 * 2 ** attempt, 0.8))
                 continue
 
-            if status == 503 and _is_not_leader(content):
+            code = _error_code(content) if status == 503 else None
+            if code == "node_down":                         # crashed node: treat like a dead machine
+                last_error = f"{target} is down"
+                leader_cache.pop(shard, None)
+                target = next_node(nodes, target)
+                await asyncio.sleep(min(0.05 * 2 ** attempt, 0.8))
+                continue
+
+            if code == "not_leader":
                 last_error = f"{target} is not leader"
                 if leader_hint and leader_hint != target:
                     target = leader_hint                   # follow the redirect immediately
@@ -96,26 +106,53 @@ def create_gateway_app(shards: dict[str, list[str]], vnodes: int = 128) -> FastA
         return await forward(shard, request.method, f"/kv/{quote(key, safe=':')}",
                              await request.body(), dict(request.query_params))
 
+    @app.get("/ring-map")
+    async def ring_map():
+        return {"shards": list(shards), "points": [[round(p, 6), s] for p, s in ring.points()]}
+
     @app.get("/ring/{key:path}")
     async def which_shard(key: str):
         shard = ring.node_for(key)
-        return {"key": key, "shard": shard, "nodes": shards[shard], "cached_leader": leader_cache.get(shard)}
+        return {"key": key, "shard": shard, "position": ring.position(key), "nodes": shards[shard],
+                "cached_leader": leader_cache.get(shard)}
+
+    async def status_of(addr: str) -> dict:
+        t0 = time.perf_counter()
+        try:
+            async with box["s"].get(f"http://{addr}/status",
+                                    timeout=aiohttp.ClientTimeout(total=0.5)) as r:
+                data = await r.json()
+            return {"address": addr, "up": True,
+                    "latency_ms": round((time.perf_counter() - t0) * 1000, 1), **data}
+        except Exception:
+            return {"address": addr, "up": False}
 
     @app.get("/cluster")
     async def cluster():
-        async def one(addr: str):
-            t0 = time.perf_counter()
-            try:
-                async with box["s"].get(f"http://{addr}/status",
-                                        timeout=aiohttp.ClientTimeout(total=0.5)) as r:
-                    data = await r.json()
-                return {"address": addr, "up": True,
-                        "latency_ms": round((time.perf_counter() - t0) * 1000, 1), **data}
-            except Exception:
-                return {"address": addr, "up": False}
-
-        return {"shards": {shard: await asyncio.gather(*(one(a) for a in nodes))
+        return {"shards": {shard: await asyncio.gather(*(status_of(a) for a in nodes))
                            for shard, nodes in shards.items()}}
+
+    @app.post("/admin/crash")
+    async def crash(request: Request):
+        body = await request.json()
+        shard = body.get("shard")
+        seconds = float(body.get("seconds", 4))
+        if shard not in shards:
+            return JSONResponse(status_code=404, content={"error": f"unknown shard {shard!r}"})
+        statuses = await asyncio.gather(*(status_of(a) for a in shards[shard]))
+        if not all(s["up"] and not s.get("paused") for s in statuses):
+            return JSONResponse(status_code=409, content={
+                "error": "shard_degraded",
+                "detail": "A replica in this shard is already down. Wait until all three are back."})
+        leaders = [s for s in statuses if s.get("role") == "leader"]
+        if len(leaders) != 1:
+            return JSONResponse(status_code=409, content={
+                "error": "no_leader", "detail": "This shard is electing a leader right now. Try again."})
+        leader = leaders[0]
+        async with box["s"].post(f"http://{leader['address']}/admin/pause", json={"seconds": seconds}) as r:
+            result = await r.json()
+        return {"shard": shard, "crashed": leader["id"], "address": leader["address"],
+                "term": leader["term"], "seconds": result["paused_for"]}
 
     @app.get("/health")
     async def health():

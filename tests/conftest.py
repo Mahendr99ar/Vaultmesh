@@ -34,7 +34,8 @@ class InMemoryNetwork:
     async def deliver(self, src: str, dst: str, call):
         await asyncio.sleep(0.002)  # a little network delay
         node = self.nodes.get(dst)
-        if src in self.isolated or dst in self.isolated or node is None or node._stopped:
+        if (src in self.isolated or dst in self.isolated or node is None or node._stopped
+                or node.paused):  # a paused (simulated-crash) node answers nothing
             raise ConnectionError(f"{src} -> {dst} unreachable")
         return call(node)
 

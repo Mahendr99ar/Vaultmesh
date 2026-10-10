@@ -1,9 +1,16 @@
 # VaultMesh — a sharded, fault-tolerant key-value store built on Raft
 
+![CI](https://github.com/Mahendr99ar/vaultmesh/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+
+**Live demo:** _coming soon_ · **Author:** [Mahendra Meena](https://github.com/Mahendr99ar)
+
 VaultMesh is a distributed key-value database written from scratch in Python. Data is split across
 **shards** with consistent hashing, and every shard is replicated on **three nodes** that agree on
 every write through the **Raft consensus algorithm**. Any single node can crash — including the
 leader — and the cluster keeps serving reads and writes without losing a single acknowledged write.
+
+![VaultMesh: shard1 elected a new leader 740 ms after its old leader was crashed from the control bar](docs/dashboard.png)
 
 ```mermaid
 flowchart LR
@@ -30,8 +37,8 @@ flowchart LR
 | Consistency | Linearizable reads through the **ReadIndex** protocol (no log write per read); optional fast `?consistency=stale` local reads |
 | Sharding | Consistent hash ring with 128 virtual nodes per shard; adding a shard moves ~1/N of keys |
 | Routing | Gateway caches each shard's leader, follows `X-Raft-Leader` redirects, retries other replicas with exponential backoff |
-| Operations | Live dashboard, `/status` and `/cluster` endpoints, Docker Compose deployment, GitHub Actions CI |
-| Testing | 21 pytest tests incl. partitions, leader isolation and crash recovery on a simulated network, plus a chaos test that SIGKILLs leaders on a real cluster |
+| Operations | Live console: animated Raft topology per shard, one-click "crash leader" with measured failover time, browser load generator with throughput/p99 chart, event timeline, interactive hash ring. `/status`, `/cluster`, Docker Compose, GitHub Actions CI |
+| Testing | 22 pytest tests incl. partitions, leader isolation and crash recovery on a simulated network, plus a chaos test that SIGKILLs leaders on a real cluster |
 
 ## Results
 
@@ -53,7 +60,7 @@ Requires Python 3.10+.
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -v                          # 21 tests
+python -m pytest -v                          # 22 tests
 
 python scripts/local_cluster.py --clean      # 2 shards x 3 nodes + gateway
 # open http://localhost:8080  for the live dashboard
@@ -79,7 +86,9 @@ With Docker: `docker compose up -d --build`, then open http://localhost:8080.
 | `DELETE` | `/kv/{key}` | delete a key |
 | `GET` | `/ring/{key}` | which shard and nodes own a key |
 | `GET` | `/cluster` | role, term, commit index and log size of every node |
-| `GET` | `/` | live dashboard |
+| `GET` | `/ring-map` | every virtual node on the hash ring (used by the console) |
+| `POST` | `/admin/crash` | body `{"shard": "shard1", "seconds": 4}`; simulates a crash of that shard's leader. Refused unless all 3 replicas are healthy, so a shard never loses its majority |
+| `GET` | `/` | live console |
 
 Gateway responses carry `X-Shard`, `X-Served-By` and `X-Attempts` headers so you can watch
 routing and failover happen.
