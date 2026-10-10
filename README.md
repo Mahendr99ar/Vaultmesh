@@ -3,7 +3,7 @@
 ![CI](https://github.com/Mahendr99ar/vaultmesh/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 
-**Live demo:** _coming soon_ · **Author:** [Mahendra Meena](https://github.com/Mahendr99ar)
+**Live demo:** [vaultmesh.onrender.com](https://vaultmesh.onrender.com) · **Author:** [Mahendra Meena](https://github.com/Mahendr99ar)
 
 VaultMesh is a distributed key-value database written from scratch in Python. Data is split across
 **shards** with consistent hashing, and every shard is replicated on **three nodes** that agree on
