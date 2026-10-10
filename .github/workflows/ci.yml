@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Unit and fault-injection tests
+        run: python -m pytest -v
+      - name: Chaos test on a real 7-process cluster
+        run: |
+          python scripts/local_cluster.py --clean &
+          sleep 5
+          python scripts/chaos_test.py --rounds 3
+      - name: Docker image builds
+        run: docker build -t vaultmesh .

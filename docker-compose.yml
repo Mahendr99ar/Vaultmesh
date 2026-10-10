@@ -1,0 +1,50 @@
+# 2 shards x 3 Raft nodes + 1 gateway. Only the gateway is published (port 8080).
+#   docker compose up -d --build
+#   open http://localhost:8080/
+x-node: &node
+  build: .
+  image: vaultmesh:latest
+  restart: unless-stopped
+  mem_limit: 128m
+
+services:
+  s1n1:
+    <<: *node
+    command: ["node", "--id", "s1n1", "--port", "9000", "--data", "/data", "--peers", "s1n2=s1n2:9000,s1n3=s1n3:9000"]
+    volumes: ["s1n1:/data"]
+  s1n2:
+    <<: *node
+    command: ["node", "--id", "s1n2", "--port", "9000", "--data", "/data", "--peers", "s1n1=s1n1:9000,s1n3=s1n3:9000"]
+    volumes: ["s1n2:/data"]
+  s1n3:
+    <<: *node
+    command: ["node", "--id", "s1n3", "--port", "9000", "--data", "/data", "--peers", "s1n1=s1n1:9000,s1n2=s1n2:9000"]
+    volumes: ["s1n3:/data"]
+
+  s2n1:
+    <<: *node
+    command: ["node", "--id", "s2n1", "--port", "9000", "--data", "/data", "--peers", "s2n2=s2n2:9000,s2n3=s2n3:9000"]
+    volumes: ["s2n1:/data"]
+  s2n2:
+    <<: *node
+    command: ["node", "--id", "s2n2", "--port", "9000", "--data", "/data", "--peers", "s2n1=s2n1:9000,s2n3=s2n3:9000"]
+    volumes: ["s2n2:/data"]
+  s2n3:
+    <<: *node
+    command: ["node", "--id", "s2n3", "--port", "9000", "--data", "/data", "--peers", "s2n1=s2n1:9000,s2n2=s2n2:9000"]
+    volumes: ["s2n3:/data"]
+
+  gateway:
+    <<: *node
+    command: ["gateway", "--port", "8080", "--shards",
+              "shard1=s1n1:9000,s1n2:9000,s1n3:9000;shard2=s2n1:9000,s2n2:9000,s2n3:9000"]
+    ports: ["8080:8080"]
+    depends_on: [s1n1, s1n2, s1n3, s2n1, s2n2, s2n3]
+
+volumes:
+  s1n1:
+  s1n2:
+  s1n3:
+  s2n1:
+  s2n2:
+  s2n3:

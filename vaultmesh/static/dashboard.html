@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VaultMesh Cluster</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --muted:#6b7280; --line:#e5e7eb;
+          --leader:#0f766e; --follower:#475569; --candidate:#b45309; --down:#b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1218; --card:#171b23; --ink:#e6e8ec; --muted:#9aa3b2; --line:#272d38;
+            --leader:#2dd4bf; --follower:#94a3b8; --candidate:#f59e0b; --down:#f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background:var(--bg); color:var(--ink); }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h2 { font-size: 15px; margin:0 0 10px; }
+  table { width:100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align:left; padding:6px 4px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  .role { font-weight:600; }
+  .leader { color:var(--leader); } .follower { color:var(--follower); }
+  .candidate { color:var(--candidate); } .down { color:var(--down); }
+  form { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+  input { flex:1 1 140px; padding:8px 10px; border:1px solid var(--line); border-radius:6px;
+          background:var(--bg); color:var(--ink); font:inherit; }
+  button { padding:8px 14px; border:0; border-radius:6px; background:var(--ink); color:var(--card);
+           font:inherit; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--ink); border:1px solid var(--line); }
+  pre { margin:0; padding:10px; background:var(--bg); border-radius:6px; overflow:auto;
+        font-size:12px; min-height:48px; white-space:pre-wrap; }
+  .console { margin-top:16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>VaultMesh cluster</h1>
+  <p class="sub">Sharded key-value store · each shard is a 3-node Raft group · refreshes every second</p>
+
+  <div class="grid" id="shards"></div>
+
+  <div class="card console">
+    <h2>Try it</h2>
+    <form id="f" onsubmit="return false">
+      <input id="k" placeholder="key" value="user:42">
+      <input id="v" placeholder="value (for PUT)" value="Mahendra">
+      <button onclick="op('PUT')">PUT</button>
+      <button class="ghost" onclick="op('GET')">GET</button>
+      <button class="ghost" onclick="op('DELETE')">DELETE</button>
+    </form>
+    <pre id="out">Responses appear here, with the shard and node that served them.</pre>
+  </div>
+</main>
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function refresh() {
+  try {
+    const r = await fetch("/cluster");
+    const data = await r.json();
+    document.getElementById("shards").innerHTML = Object.entries(data.shards).map(([shard, nodes]) => `
+      <div class="card"><h2>${esc(shard)}</h2>
+      <table><thead><tr><th>Node</th><th>Role</th><th>Term</th><th>Commit</th><th>Log</th><th>Keys</th></tr></thead>
+      <tbody>${nodes.map(n => n.up ? `
+        <tr><td>${esc(n.id)}</td><td class="role ${esc(n.role)}">${esc(n.role)}</td>
+        <td>${n.term}</td><td>${n.commit_index}</td><td>${n.log_size}</td><td>${n.keys}</td></tr>` : `
+        <tr><td>${esc(n.address)}</td><td class="role down">down</td><td colspan="4"></td></tr>`).join("")}
+      </tbody></table></div>`).join("");
+  } catch (e) { /* gateway restarting */ }
+}
+
+async function op(method) {
+  const key = document.getElementById("k").value.trim();
+  if (!key) return;
+  const init = { method };
+  if (method === "PUT") {
+    init.body = JSON.stringify({ value: document.getElementById("v").value });
+    init.headers = { "content-type": "application/json" };
+  }
+  const t0 = performance.now();
+  const r = await fetch("/kv/" + encodeURIComponent(key), init);
+  const ms = (performance.now() - t0).toFixed(1);
+  const text = await r.text();
+  document.getElementById("out").textContent =
+    `${method} ${key} -> HTTP ${r.status} in ${ms} ms\n` +
+    `shard=${r.headers.get("x-shard")} served-by=${r.headers.get("x-served-by")} attempts=${r.headers.get("x-attempts")}\n` + text;
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>
