@@ -2,10 +2,6 @@
 
 ![CI](https://github.com/Mahendr99ar/vaultmesh/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-<<<<<<< HEAD
-=======
-![License](https://img.shields.io/badge/license-MIT-green)
->>>>>>> b076aec3fd6c45840884f667bce8e78fae77f116
 
 **Live demo:** _coming soon_ · **Author:** [Mahendra Meena](https://github.com/Mahendr99ar)
 
@@ -80,6 +76,9 @@ python -m vaultmesh bench --ops 10000 --concurrency 64
 ```
 
 With Docker: `docker compose up -d --build`, then open http://localhost:8080.
+
+Everything in one process (what the free Render deployment runs, 64 MB RAM):
+`python -m vaultmesh demo`, then open http://localhost:8080.
 
 ## API
 

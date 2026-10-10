@@ -20,5 +20,14 @@ jobs:
           python scripts/local_cluster.py --clean &
           sleep 5
           python scripts/chaos_test.py --rounds 3
+      - name: Single-process demo mode (used for free hosting)
+        run: |
+          python -m vaultmesh demo --port 8090 &
+          sleep 5
+          curl -sf -X PUT localhost:8090/kv/ci -H "content-type: application/json" -d '{"value":"ok"}'
+          curl -sf localhost:8090/kv/ci | grep -q '"ok"'
+          curl -sf -X POST localhost:8090/admin/crash -H "content-type: application/json" -d '{"shard":"shard1","seconds":2}'
+          sleep 3
+          curl -sf localhost:8090/kv/ci | grep -q '"ok"'
       - name: Docker image builds
         run: docker build -t vaultmesh .

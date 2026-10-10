@@ -328,60 +328,56 @@ commits looks far better to a reviewer than one giant commit.
 
 ---
 
-## Part 3A — Free hosting (no credit card): Hugging Face Spaces
+## Part 3A — Free hosting (no credit card): Render
 
-Hugging Face Spaces gives a free Docker server (2 vCPU, 16 GB RAM) with a public HTTPS link. The
-whole cluster (6 nodes + gateway) runs inside one container using `scripts/local_cluster.py`.
+Render's free web service gives a public HTTPS link and builds straight from your GitHub repo.
+(Hugging Face Spaces now needs a paid plan for Docker, so it is no longer the free option.)
+
+The free plan has 512 MB RAM and a small share of a CPU, which is too little for 7 separate
+processes (about 440 MB). So the Docker image runs **demo mode** by default:
+`python -m vaultmesh demo`. It runs all 6 Raft nodes and the gateway in **one** process. The Raft
+code and write-ahead log are the same; nodes pass Raft messages through an in-process network
+(`vaultmesh/demo.py`, `LocalTransport`) instead of HTTP, and the gateway still talks to the nodes
+over real HTTP. Measured: **64 MB RAM and about 1% CPU when idle.**
 
 **Limits to know (and to say honestly in an interview):**
-* The disk is **not persistent**. Data is wiped when the Space restarts, so this is a live
-  demo, not a real database. The WAL still protects against single-node crashes inside it.
-* The Space **sleeps** if nobody opens it for a while; the first visit after that takes about a
-  minute to wake up. Open it yourself before an interview.
-* All 6 nodes share one machine, so this shows the algorithm, not real hardware failures.
+* The service **sleeps after 15 minutes without visitors**; the next visit takes about a minute to
+  wake it. Open the link yourself a minute before an interview.
+* The disk is not persistent. A redeploy or restart starts with an empty store; it is a demo.
+* All nodes share one machine, so this shows the algorithm, not real hardware failures. The
+  multi-process mode (`scripts/local_cluster.py`) and Docker Compose run real separate processes.
 
 **Steps**
 
-1. Sign up at huggingface.co (free, email only).
-2. Click your profile → **New Space**. Name: `vaultmesh`. SDK: **Docker** → **Blank**.
-   Hardware: **CPU basic (free)**. Visibility: **Public**. Create.
-3. Upload these to the Space (Files → **Add file** → **Upload files**, or with git):
-   * the folders `vaultmesh/` and `scripts/`, and `requirements.txt`
-   * `deploy/huggingface/Dockerfile` → put it at the **root** as `Dockerfile`
-   * `deploy/huggingface/README.md` → put it at the **root** as `README.md`
-     (its header tells Spaces to use Docker on port 7860)
+1. Go to **render.com** → **Get Started** → **Sign up with GitHub** (no card needed).
+2. Allow Render to see your repositories (all, or only `vaultmesh`).
+3. Dashboard → **New +** → **Web Service** → pick **Mahendr99ar/vaultmesh** → **Connect**.
+4. Fill in:
+   * **Name:** `vaultmesh` (your link becomes `https://vaultmesh.onrender.com`, or with a suffix
+     if the name is taken)
+   * **Language / Runtime:** **Docker** (it finds the `Dockerfile` in the repo root)
+   * **Branch:** `main`
+   * **Region:** Singapore (closest to India)
+   * **Instance type:** **Free**
+5. Click **Deploy Web Service**. The log shows the Docker build; after 3–5 minutes it says
+   **Your service is live**. Open the link at the top of the page.
+6. Every `git push` to `main` redeploys automatically.
 
-   With git instead:
-
-   ```bash
-   git clone https://huggingface.co/spaces/<your-hf-username>/vaultmesh hf-space
-   cp -r vaultmesh scripts requirements.txt hf-space/
-   cp deploy/huggingface/Dockerfile deploy/huggingface/README.md hf-space/
-   cd hf-space
-   git add . && git commit -m "VaultMesh demo" && git push
-   ```
-
-   (For `git push`, use a Hugging Face **access token** with write permission as the password:
-   Settings → Access Tokens.)
-4. The **Logs** tab shows the build; after 2–3 minutes the status turns **Running**.
-5. Your public link is `https://<your-hf-username>-vaultmesh.hf.space`. Put it on your resume as
-   "Live demo".
-
-To update the demo later, upload the changed files again or `git push` again.
+To test the same thing on your laptop: `python -m vaultmesh demo` and open http://localhost:8080.
 
 ### Other free options
 
 | Option | Cost | Good for | Catch |
 |---|---|---|---|
-| **Your own laptop** | Free | Interview demos: run `local_cluster.py`, kill a leader live with `chaos_test.py` | Not online 24/7 |
-| **GitHub Actions** (already set up) | Free | Proof it works: every push runs 22 tests + chaos test; the green badge and logs are public | Not a live website |
-| **GitHub Codespaces** | Free monthly hours | Running the full Docker Compose setup in the browser when your laptop can't | Stops when idle; link is temporary |
-| **Hugging Face Spaces** | Free | Always-reachable public demo link | Sleeps when idle, data not persistent |
+| **Your own laptop** | Free | Interview demos: `local_cluster.py` plus the crash button or `chaos_test.py` | Not online 24/7 |
+| **GitHub Actions** (already set up) | Free | Proof it works: every push runs the tests, a chaos test and the demo; green badge is public | Not a live website |
+| **Render free web service** | Free, no card | Public demo link, auto-deploy from GitHub | Sleeps after 15 min idle, 512 MB, no persistent disk |
+| **Koyeb free instance** | Free | Same idea as Render (Docker, 512 MB) | Sleeps after 1 h idle; may ask for a card to verify |
 | **AWS Free plan** (Part 3 below) | $0 on the Free plan, using credits | Real cloud experience; "deployed on AWS" on the resume | Needs a card; account suspends after 6 months unless upgraded |
-| **Oracle Cloud Always Free** | Free forever | A real VM (ARM, 2 OCPU / 12 GB) running Docker Compose exactly like Part 3 | Needs a card for sign-up; free ARM capacity is often "out of capacity" |
+| **Oracle Cloud Always Free** | Free forever | A real VM running Docker Compose exactly like Part 3 | Needs a card; free ARM capacity is often "out of capacity" |
 
-**Recommended free combination:** GitHub (code + CI badge) + Hugging Face Space (live link) +
-a 60-second video of the chaos test from your laptop. That costs nothing and shows everything.
+**Recommended free combination:** GitHub (code + CI badge) + Render (live link) + a 60-second
+screen recording of the crash button. That costs nothing and shows everything.
 
 ---
 
