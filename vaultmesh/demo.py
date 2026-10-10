@@ -20,6 +20,8 @@ import contextlib
 import logging
 import os
 import shutil
+import signal
+import socket
 
 import uvicorn
 
@@ -56,6 +58,13 @@ class LocalTransport:
         pass
 
 
+def _free_port() -> int:
+    """Ask the OS for a free port, so the demo never clashes with another cluster on this machine."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 class _Server(uvicorn.Server):
     """Several uvicorn servers share one loop, so none of them may grab the signal handlers."""
 
@@ -71,7 +80,7 @@ async def run(port: int, num_shards: int, data_dir: str) -> None:
     shards: dict[str, list[str]] = {}
 
     for s in range(1, num_shards + 1):
-        members = [(f"s{s}n{n}", 9000 + s * 100 + n) for n in range(1, 4)]
+        members = [(f"s{s}n{n}", _free_port()) for n in range(1, 4)]
         shards[f"shard{s}"] = [f"127.0.0.1:{p}" for _, p in members]
         for node_id, node_port in members:
             peers = {pid: f"127.0.0.1:{pp}" for pid, pp in members if pid != node_id}
@@ -88,7 +97,22 @@ async def run(port: int, num_shards: int, data_dir: str) -> None:
                                           log_level="warning", access_log=False)))
     log.info("VaultMesh demo: %d shards x 3 nodes in one process, dashboard on port %d", num_shards, port)
     print(f"VaultMesh demo running: {num_shards} shards x 3 nodes. Open http://localhost:{port}/", flush=True)
+    print("Press Ctrl+C to stop.", flush=True)
+
+    # Graceful shutdown on Ctrl+C (and on SIGTERM, which hosts like Render send on redeploy):
+    # ask every server to exit so each runs its shutdown hooks (Raft nodes stop, HTTP clients
+    # close) instead of being cancelled mid-flight.
+    loop = asyncio.get_running_loop()
+
+    def request_exit(*_):
+        loop.call_soon_threadsafe(lambda: [setattr(srv, "should_exit", True) for srv in servers])
+
+    signal.signal(signal.SIGINT, request_exit)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, request_exit)
+
     await asyncio.gather(*(srv.serve() for srv in servers))
+    print("VaultMesh demo stopped.", flush=True)
 
 
 def main(port: int, num_shards: int, data_dir: str) -> None:
